@@ -12,6 +12,14 @@ An [MCP (Model Context Protocol)](https://modelcontextprotocol.io) server that g
 - 🔁 **Reproducible by design** — every response embeds the exact request XML
 - 🐍 **Code generation** — one-click Python and R scripts that replicate any query without this server
 - 📐 **Rate ratios with CIs** — exact Poisson confidence intervals, delta method, no API call needed
+- 📈 **Trend analysis** — Annual Percent Change (APC) via log-linear regression
+- ⚖️ **Rate difference** — absolute rate difference with CI (Poisson or SE propagation)
+- 🎯 **SMR** — Standardized Mortality Ratio with exact Poisson CI
+- ⏳ **YLL** — Years of Life Lost (WHO/CDC method) from age-stratified data
+- 📉 **Excess deaths** — observed vs. linear baseline trend with prediction intervals
+- 🔬 **Kitagawa decomposition** — split crude rate differences into composition vs. rates effects
+- 🧮 **Life tables** — abridged period life tables with e₀ and standard columns (nMx, nqx, lx, …)
+- 🔍 **ICD-10 lookup** — search chapter/sub-chapter codes for cause-of-death filtering
 - 🛡️ **Rate limiting built-in** — automatically enforces the ~2 min WONDER API cooldown
 - 📚 **Variable codebook** — discover valid parameter codes before querying
 
@@ -195,7 +203,186 @@ calculate_rate_ratio(
 
 **Input options per group:**
 - `count` + `population` → exact Poisson CI computed
-- `rate` + `rate_per` (default 100,000) → ratio computed but CI requires counts
+- `rate` + `rate_se` → delta method CI using supplied standard error (e.g. `D76.M41`)
+- `rate` only → ratio computed, CI not available
+
+---
+
+### `calculate_apc_tool(years, rates, alpha?)`
+Fits log-linear OLS to compute Annual Percent Change. Trend labelled as increasing / decreasing / stable.
+
+```
+calculate_apc_tool(
+  years = [2010, 2011, 2012, 2013, 2014, 2015, 2016, 2017, 2018, 2019, 2020],
+  rates = [750.1, 740.3, 731.5, 718.2, 704.9, 693.0, 681.8, 667.5, 659.2, 649.8, 828.7]
+)
+→ {
+    "apc": 0.8,
+    "ci_lower": -0.5,
+    "ci_upper": 2.2,
+    "trend": "No significant trend (p = 0.271)",
+    "interpretation": "The annual percent change is 0.8% (95% CI: -0.5% to 2.2%) ..."
+  }
+```
+
+---
+
+### `calculate_rate_difference(group_1, group_2, alpha?)`
+Computes the absolute rate difference (group 1 − group 2) with CI. Accepts the same `count`/`population` or `rate`/`rate_se` inputs as `calculate_rate_ratio`.
+
+```
+calculate_rate_difference(
+  group_1 = {"rate": 1067.16, "rate_se": 1.61, "label": "Black or African American"},
+  group_2 = {"rate":  825.86, "rate_se": 0.50, "label": "White"},
+)
+→ {
+    "rate_difference": 241.30,
+    "ci_lower": 238.0,
+    "ci_upper": 244.6,
+    "method": "SE propagation",
+    "interpretation": "The rate in Black or African American exceeds White by 241.30 per 100,000 ..."
+  }
+```
+
+---
+
+### `calculate_smr_tool(observed_deaths, expected_rate, population, rate_per?, alpha?)`
+Standardized Mortality Ratio with exact Poisson CI. SMR = observed / expected, where expected = expected_rate × population / rate_per.
+
+```
+calculate_smr_tool(
+  observed_deaths = 1250,
+  expected_rate   = 800.0,
+  population      = 150000,
+  rate_per        = 100000,
+)
+→ {
+    "smr": 1.042,
+    "ci_lower": 0.984,
+    "ci_upper": 1.103,
+    "interpretation": "The observed deaths are 1.042 times the expected (4.2% excess). 95% CI: 0.984–1.103."
+  }
+```
+
+---
+
+### `calculate_yll_tool(age_stratified_rows, deaths_col?, age_group_col?, max_age?, population?)`
+Years of Life Lost (WHO/CDC method): YLL = Σ deaths × max(0, max_age − midpoint). Accepts rows directly from `query_wonder` grouped by `D76.V5` (standard age groups). Set `max_age=75` (default) for the WHO standard or `max_age=80` for the US standard.
+
+```
+calculate_yll_tool(
+  age_stratified_rows = [...],   # rows from query_wonder with age groups
+  deaths_col          = "Deaths",
+  population          = 330000000,
+  max_age             = 75
+)
+→ {
+    "total_yll": 7234891,
+    "yll_per_100k": 2192.4,
+    "n_groups": 14,
+    "interpretation": "Total YLL = 7,234,891 (2,192.4 per 100,000). ..."
+  }
+```
+
+---
+
+### `calculate_excess_deaths_tool(observed_series, baseline_years, event_year, ...)`
+Estimates excess deaths by fitting a linear OLS trend to baseline crude rates and extrapolating to an event year. Prediction interval uses the t-distribution.
+
+```
+calculate_excess_deaths_tool(
+  observed_series = [...],          # rows with year, deaths, population columns
+  baseline_years  = [2015, 2016, 2017, 2018, 2019],
+  event_year      = 2020,
+  deaths_col      = "Deaths",
+  population_col  = "Population",
+  year_col        = "Year"
+)
+→ {
+    "event_year": 2020,
+    "observed_deaths": 3383729,
+    "expected_deaths": 2981000,
+    "excess_deaths": 402729,
+    "pct_excess": 13.5,
+    "pred_interval_lower": 2901000,
+    "pred_interval_upper": 3061000,
+    "interpretation": "In 2020, observed deaths (3,383,729) exceeded the projected baseline (2,981,000) by 402,729 (13.5%). ..."
+  }
+```
+
+---
+
+### `calculate_kitagawa_tool(group_1_rows, group_2_rows, label_1?, label_2?, ...)`
+Kitagawa decomposition of the crude rate difference between two populations into:
+- **Composition effect** — due to differences in age structure
+- **Rates effect** — due to differences in age-specific mortality rates
+
+Accepts age-stratified rows from `query_wonder` (must include deaths, population, and age group columns).
+
+```
+calculate_kitagawa_tool(
+  group_1_rows = [...],   # age-stratified rows for group 1
+  group_2_rows = [...],   # age-stratified rows for group 2
+  label_1      = "Black or African American",
+  label_2      = "White"
+)
+→ {
+    "crude_rate_difference": 241.30,
+    "composition_effect": -82.4,   # negative: group 1 is younger → suppresses crude rate
+    "rates_effect":        323.7,  # true age-specific rate gap
+    "composition_pct":    -34.2,
+    "rates_pct":          134.2,
+    "interpretation": "Of the 241.30/100k crude rate difference, -34.2% is explained by age composition and 134.2% by age-specific rates. ..."
+  }
+```
+
+---
+
+### `build_life_table_tool(age_stratified_rows, deaths_col?, population_col?, age_group_col?, radix?)`
+Constructs an abridged period life table from age-stratified WONDER data. Uses the Reed-Merrell formula to convert nMx → nqx. Returns life expectancy at birth (e₀) and the full table with nMx, nqx, lx, dx, nLx, Tx, and ex columns.
+
+```
+build_life_table_tool(
+  age_stratified_rows = [...],   # rows from query_wonder grouped by D76.V5
+  radix               = 100000
+)
+→ {
+    "e0": 77.3,
+    "rows": [
+      {"age_group": "< 1 year",   "nMx": 0.00522, "nqx": 0.00520, "lx": 100000, ...},
+      {"age_group": "1-4 years",  "nMx": 0.00025, "nqx": 0.00099, "lx":  99480, ...},
+      ...
+      {"age_group": "85+ years",  "nMx": 0.14700, "nqx": 1.00000, "lx":  12450, ...}
+    ],
+    "interpretation": "Life expectancy at birth (e₀) = 77.3 years."
+  }
+```
+
+---
+
+### `get_icd10_codes_tool(search_term?)`
+Searches the local ICD-10 chapter and sub-chapter table (100+ entries). Returns codes, labels, and WONDER filter hints (`wonder_filter_key`, `wonder_filter_value`). Call with no argument to list all chapters.
+
+```
+get_icd10_codes_tool(search_term = "heart")
+→ [
+    {"code": "I00-I09", "label": "Acute rheumatic fever",         "wonder_filter_value": "I00-I09", ...},
+    {"code": "I20-I25", "label": "Ischaemic heart diseases",      "wonder_filter_value": "I20-I25", ...},
+    {"code": "I30-I52", "label": "Other forms of heart disease",  "wonder_filter_value": "I30-I52", ...},
+    ...
+  ]
+```
+
+Use the returned `wonder_filter_value` as a filter in `query_wonder`:
+```
+query_wonder(
+  database_id = "D76",
+  group_by    = ["D76.V1-level1"],
+  measures    = ["D76.M1", "D76.M3"],
+  filters     = {"D76.V2": "I20-I25"},   # Ischaemic heart diseases
+  title       = "Ischaemic heart disease mortality by year"
+)
+```
 
 ---
 
@@ -246,6 +433,8 @@ If you need sub-national data, your options are:
 
 ## 🎬 Demo
 
+### Demo 1: Age-adjusted mortality by race with rate ratio
+
 US age-adjusted mortality by year and race, with a Black/White rate ratio for 2018–2020.
 
 ```
@@ -294,6 +483,66 @@ The rate in Black or African American is 1.230 times the rate in White
 
 ---
 
+### Demo 2: All-cause mortality trend with APC + life expectancy at birth
+
+Query all-cause age-stratified mortality, compute APC over the decade, and build a life table.
+
+**Step 1** — Query age-stratified mortality for a single year to build a life table:
+
+```
+query_wonder(
+  database_id = "D76",
+  group_by    = ["D76.V5"],
+  measures    = ["D76.M1", "D76.M2"],
+  title       = "US All-Cause Mortality by Age Group 2019"
+)
+```
+
+**Step 2** — Build the life table:
+
+```
+build_life_table_tool(
+  age_stratified_rows = <rows from above>,
+  deaths_col          = "Deaths",
+  population_col      = "Population"
+)
+→ {
+    "e0": 78.8,
+    "rows": [
+      {"age_group": "< 1 year",  "nMx": 0.00524, "lx": 100000, "ex": 78.8},
+      {"age_group": "1-4 years", "nMx": 0.00024, "lx":  99476, "ex": 78.2},
+      ...
+    ]
+  }
+```
+
+**Step 3** — Query annual crude rates 2010–2019, then measure the trend:
+
+```
+query_wonder(
+  database_id = "D76",
+  group_by    = ["D76.V1-level1"],
+  measures    = ["D76.M1", "D76.M3"],
+  title       = "US All-Cause Mortality by Year 2010-2019"
+)
+```
+
+```
+calculate_apc_tool(
+  years = [2010, 2011, 2012, 2013, 2014, 2015, 2016, 2017, 2018, 2019],
+  rates = [747.0, 741.3, 732.8, 724.6, 723.2, 733.1, 728.8, 731.9, 723.6, 715.2]
+)
+→ {
+    "apc":      -0.4,
+    "ci_lower": -0.7,
+    "ci_upper": -0.1,
+    "trend":    "Significantly decreasing (p = 0.014)",
+    "interpretation": "Crude mortality declined by 0.4%/year (95% CI: -0.7% to -0.1%) over 2010–2019."
+  }
+```
+
+---
+
 ## 🧪 Development
 
 ```bash
@@ -313,15 +562,18 @@ python -m wonder_mcp.server
 wonder-mcp/
 ├── pyproject.toml
 ├── src/wonder_mcp/
-│   ├── server.py      # MCP tools (FastMCP entry point)
+│   ├── server.py      # MCP tools (FastMCP entry point) — 14 tools
 │   ├── client.py      # HTTP client, XML builder, response parser
 │   ├── databases.py   # Database registry and variable codebooks
 │   ├── codegen.py     # Python + R code generation
-│   └── stats.py       # Rate ratio with Poisson CIs
+│   ├── icd10.py       # Local ICD-10 chapter/sub-chapter lookup table
+│   └── stats.py       # Epidemiological stats (rate ratio, APC, SMR, YLL, excess deaths, Kitagawa, life table)
 └── tests/
     ├── test_client.py
     ├── test_codegen.py
-    └── test_stats.py
+    ├── test_stats.py
+    ├── test_analytics.py
+    └── test_kitagawa_lifetable_icd10.py
 ```
 
 ---
