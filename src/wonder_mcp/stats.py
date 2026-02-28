@@ -10,11 +10,19 @@ from scipy import stats
 
 
 class RateInput(BaseModel):
-    """Either (count + population) or (rate + rate_per) must be provided."""
+    """Flexible rate input supporting three CI methods.
+
+    Priority (highest to lowest):
+      1. count + population  → exact Poisson CI per group, delta method on log(RR)
+      2. rate + rate_se      → delta method on log(RR) using provided SE
+                               (use with WONDER's age-adjusted rate + D76.M41 SE)
+      3. rate only           → ratio computed, CI not available
+    """
 
     count: Optional[int] = None
     population: Optional[int] = None
     rate: Optional[float] = None
+    rate_se: Optional[float] = None   # standard error of the rate (e.g. D76.M41)
     rate_per: int = 100_000
     label: str = ""
 
@@ -24,22 +32,26 @@ class RateInput(BaseModel):
         has_rate = self.rate is not None
         if not has_count_pop and not has_rate:
             raise ValueError(
-                "Provide either (count + population) or (rate + rate_per)."
+                "Provide either (count + population), or (rate), or (rate + rate_se)."
             )
         return self
 
     @property
-    def crude_rate(self) -> float:
-        """Rate per rate_per population units."""
+    def effective_rate(self) -> float:
+        """Rate in the specified rate_per units."""
         if self.rate is not None:
             return self.rate
         if self.count is not None and self.population is not None:
             return (self.count / self.population) * self.rate_per
         raise ValueError("Cannot compute rate: insufficient inputs.")
 
+    # Keep crude_rate as alias for backward compatibility
+    @property
+    def crude_rate(self) -> float:
+        return self.effective_rate
+
     @property
     def effective_count(self) -> Optional[float]:
-        """Return count if available (used for exact Poisson CI)."""
         if self.count is not None:
             return float(self.count)
         return None
@@ -91,20 +103,29 @@ def rate_ratio(
     """
     Compute a rate ratio (group_1 / group_2) with a confidence interval.
 
-    Method selection:
-    - If both groups have count + population: exact Poisson CI per group,
-      delta method log-ratio CI for the ratio.
-    - If only rates are available: Wald CI on the log ratio using Poisson
-      approximation (variance = 1/count is unavailable, so we fall back to
-      a note that CIs cannot be computed without counts).
+    CI method selected automatically based on available inputs:
+
+    1. count + population (both groups)
+       → Exact Poisson CI per group, delta method on log(RR).
+       Best for crude rates computed from raw counts.
+
+    2. rate + rate_se (both groups)
+       → Delta method on log(RR) using the provided standard errors.
+       Use with WONDER's age-adjusted rate (D76.M4) and its SE (D76.M41).
+       Formula: Var(log RR) = (SE1/rate1)² + (SE2/rate2)²
+
+    3. rate only
+       → Ratio computed; CI not available without SE or counts.
     """
-    rate1 = r1.crude_rate
-    rate2 = r2.crude_rate
+    rate1 = r1.effective_rate
+    rate2 = r2.effective_rate
 
     if rate2 == 0:
         raise ValueError("Group 2 rate is zero; rate ratio is undefined.")
 
     rr = rate1 / rate2
+    z = stats.norm.ppf(1 - alpha / 2)
+    log_rr = math.log(rr if rr > 0 else 1e-10)
 
     # --- Determine CI method ---
     if (
@@ -113,35 +134,32 @@ def rate_ratio(
         and r2.effective_count is not None
         and r2.effective_population is not None
     ):
-        # Exact Poisson per group, delta method on log(RR)
-        c1, n1 = r1.effective_count, r1.effective_population
-        c2, n2 = r2.effective_count, r2.effective_population
+        # Method 1: exact Poisson per group, delta method on log(RR)
+        c1 = r1.effective_count
+        c2 = r2.effective_count
+        c1_adj = max(c1, 0.5)   # mid-p adjustment for zero counts
+        c2_adj = max(c2, 0.5)
 
-        if c1 == 0 or c2 == 0:
-            # One count is zero — use mid-P-adjusted approach
-            # Approximation: add 0.5 to avoid log(0)
-            c1_adj = max(c1, 0.5)
-            c2_adj = max(c2, 0.5)
-        else:
-            c1_adj, c2_adj = c1, c2
-
-        # Variance of log(RR) by delta method: 1/c1 + 1/c2
         se_log_rr = math.sqrt(1.0 / c1_adj + 1.0 / c2_adj)
-        z = stats.norm.ppf(1 - alpha / 2)
-        log_rr = math.log(rr if rr > 0 else 1e-10)
         ci_lower = math.exp(log_rr - z * se_log_rr)
         ci_upper = math.exp(log_rr + z * se_log_rr)
+        method = "Poisson exact mid-p per group, delta method on log(RR) for CI"
 
-        method = (
-            "Poisson exact mid-p per group, delta method on log(RR) for CI"
-        )
+    elif r1.rate_se is not None and r2.rate_se is not None:
+        # Method 2: delta method using WONDER-supplied standard errors
+        # Var(log RR) = (SE1/rate1)^2 + (SE2/rate2)^2
+        se_log_rr = math.sqrt((r1.rate_se / rate1) ** 2 + (r2.rate_se / rate2) ** 2)
+        ci_lower = math.exp(log_rr - z * se_log_rr)
+        ci_upper = math.exp(log_rr + z * se_log_rr)
+        method = "Delta method on log(RR) using supplied rate standard errors"
+
     else:
-        # No counts available — cannot compute a valid CI
+        # Method 3: no SE or counts — ratio only
         ci_lower = float("nan")
         ci_upper = float("nan")
         method = (
-            "Rate ratio computed from rates only; CIs require event counts. "
-            "Provide count + population for exact CIs."
+            "Rate ratio computed from rates only; CIs require count+population "
+            "or rate+rate_se."
         )
 
     # --- Plain-language interpretation ---

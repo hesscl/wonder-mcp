@@ -229,6 +229,21 @@ def _param_elem(name: str, value: str) -> ET.Element:
     return p
 
 
+def _param_elem_multi(name: str, values: list[str]) -> ET.Element:
+    """Single <parameter> element with multiple <value> children.
+
+    WONDER expects multi-value params (e.g. V_D76.V5 age groups) packed
+    into one element — NOT as separate <parameter> elements per value.
+    """
+    p = ET.Element("parameter")
+    n = ET.SubElement(p, "name")
+    n.text = name
+    for v in values:
+        ve = ET.SubElement(p, "value")
+        ve.text = v
+    return p
+
+
 def _measure_ordinal(measure_code: str) -> str:
     """Extract numeric ordinal from a measure code: 'D76.M1' → '1'."""
     last = measure_code.split(".")[-1]
@@ -305,8 +320,7 @@ def _build_xml_from_defaults(params: QueryParams) -> str:
             continue
         value = param_dict.get(name, _default_value)
         if isinstance(value, list):
-            for v in value:
-                root.append(_param_elem(name, v))
+            root.append(_param_elem_multi(name, value))
         else:
             root.append(_param_elem(name, value))
         emitted.add(name)
@@ -316,8 +330,7 @@ def _build_xml_from_defaults(params: QueryParams) -> str:
         if name in emitted:
             continue
         if isinstance(value, list):
-            for v in value:
-                root.append(_param_elem(name, v))
+            root.append(_param_elem_multi(name, value))
         else:
             root.append(_param_elem(name, value))
 
@@ -347,8 +360,7 @@ def _build_xml_generic(params: QueryParams) -> str:
         value = params.filters[var_code]
         name = f"V_{var_code}"
         if isinstance(value, list):
-            for v in value:
-                root.append(_param_elem(name, v))
+            root.append(_param_elem_multi(name, value))
         else:
             root.append(_param_elem(name, value))
 

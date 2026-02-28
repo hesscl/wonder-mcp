@@ -69,7 +69,7 @@ def test_build_xml_no_more_than_5_group_by():
 
 
 def test_build_xml_filter_list():
-    """Multi-value filters emit multiple V_ parameters using the full variable code."""
+    """Multi-value filters pack all values into a single <parameter> element."""
     params = QueryParams(
         database_id="D76",
         group_by=[],
@@ -78,11 +78,14 @@ def test_build_xml_filter_list():
     )
     xml_str = build_xml(params)
     root = ET.fromstring(xml_str)
-    # Filter param name should be "V_D76.V8" (full variable code, not stripped)
+    # One <parameter> element for V_D76.V8 containing two <value> children
     v8_params = [
         p for p in root.findall("parameter") if p.find("name").text == "V_D76.V8"
     ]
-    assert len(v8_params) == 2
+    assert len(v8_params) == 1
+    values = [v.text for v in v8_params[0].findall("value")]
+    assert "2054-5" in values
+    assert "2106-3" in values
 
 
 def test_build_xml_default_options():
