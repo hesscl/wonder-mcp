@@ -29,7 +29,7 @@ An [MCP (Model Context Protocol)](https://modelcontextprotocol.io) server that g
 | **D10** | Natality | 1995–2002 |
 | **D104** | Heat Wave Days | 1961–2010 |
 
-> ⚠️ The CDC WONDER API returns **national-level data only.** State, county, and regional breakdowns require the [WONDER web interface](https://wonder.cdc.gov/).
+> 🚧 **Geographic limitation:** The CDC WONDER API returns **national-level data only.** State, county, MSA, and regional breakdowns are not available through the API — only through the [WONDER web interface](https://wonder.cdc.gov/). This is a hard constraint of the WONDER service itself, not this server. See [§ Geographic Limitation](#-geographic-limitation) for alternatives.
 
 ---
 
@@ -215,15 +215,80 @@ curl -s -X POST https://wonder.cdc.gov/controller/datarequest/D76 \
 
 ---
 
-## ⚠️ Important Limitations
+## 🗺️ Geographic Limitation
+
+**The CDC WONDER API only returns national-level data.** You cannot filter or group by state, county, MSA, census region, or urbanization category through the API. This is enforced server-side by CDC — it is not a limitation of this MCP server.
+
+If you need sub-national data, your options are:
+
+| Option | Geography | Notes |
+|---|---|---|
+| **WONDER web UI** | State, county, MSA | [wonder.cdc.gov](https://wonder.cdc.gov) — manual queries, downloadable CSV |
+| **CDC PLACES** | County, census tract, ZIP | Health measures via [Socrata API](https://www.cdc.gov/places) |
+| **NCHS compressed mortality files** | County | Bulk download, requires SAS/R/Python to process |
+| **State vital statistics offices** | County, city | Vary by state; some have public APIs |
+
+> **Example:** Bexar County, TX (San Antonio) mortality data is not available via this API. Use the WONDER web UI and filter to Texas → Bexar County, or use CDC PLACES for county health indicators.
+
+---
+
+## ⚠️ Other Limitations
 
 | Limitation | Details |
 |---|---|
-| **Geography** | National-level only via API. No state, county, or regional data. |
 | **Suppression** | Counts < 10 are suppressed and returned as `"Suppressed"`. Do not sum suppressed cells. |
 | **Rate limit** | ~2 minutes between requests. This server enforces it automatically. |
 | **Aggregates only** | No record-level microdata — returns summary statistics. |
+| **Crude vs age-adjusted rates** | The `calculate_rate_ratio` tool computes crude rate ratios by default. Crude rates reflect age structure differences between populations — use age-adjusted rates (`D76.M4`) for fair comparisons across groups with different age distributions. |
 | **Attribution** | Published outputs must credit CDC WONDER and include all footnotes/caveats. |
+
+---
+
+## 🎬 Demo
+
+US mortality by year and race, with a Black/White crude rate ratio for 2018–2020:
+
+```
+query_wonder(
+  database_id = "D76",
+  group_by    = ["D76.V1-level1", "D76.V8"],
+  measures    = ["D76.M1", "D76.M2", "D76.M3"],
+  title       = "US Mortality by Year and Race 1999-2020"
+)
+```
+
+```
+Year   Race                             Deaths     Population  Rate/100k
+------------------------------------------------------------------------
+1999   American Indian or Alaska Native  1,339         12,180   10,993.4
+1999   Asian or Pacific Islander         6,568         62,153   10,567.5
+1999   Black or African American        46,285        313,629   14,757.9
+1999   White                           591,949      3,766,056   15,718.0
+2000   American Indian or Alaska Native  1,382         14,333    9,642.1
+...
+2020   Black or African American        80,679        553,126   14,586.0
+2020   White                           896,151      5,733,090   15,631.2
+```
+
+Then calculate a rate ratio from the returned counts:
+
+```
+calculate_rate_ratio(
+  group_1 = {"count": 205309, "population": 1617627, "label": "Black or African American"},
+  group_2 = {"count": 2470723, "population": 17140021, "label": "White"},
+)
+```
+
+```
+Rate Ratio : 0.880
+95% CI     : 0.877 – 0.884
+Method     : Poisson exact mid-p per group, delta method on log(RR)
+
+The rate in Black or African American is 0.880 times the rate in White
+(12.0% lower). 95% CI: 0.877–0.884.
+```
+
+> ⚠️ This is a **crude** rate ratio — it does not adjust for age. Because White Americans have an older age distribution, crude mortality rates for White Americans are higher even when age-adjusted rates favor White Americans. For fair cross-group comparisons, use WONDER's age-adjusted rate (`D76.M4`) or age-stratify your query.
 
 ---
 

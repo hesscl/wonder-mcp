@@ -41,6 +41,8 @@ def test_build_xml_basic():
     assert values["B_1"] == "D76.V1-level1"
     assert "B_2" in names
     assert values["B_2"] == "D76.V8"
+    # Unused B_ slots must be *None*
+    assert values["B_3"] == "*None*"
     assert "O_title" in names
     assert values["O_title"] == "Test Query"
 
@@ -67,7 +69,7 @@ def test_build_xml_no_more_than_5_group_by():
 
 
 def test_build_xml_filter_list():
-    """Multi-value filters emit multiple V_ parameters."""
+    """Multi-value filters emit multiple V_ parameters using the full variable code."""
     params = QueryParams(
         database_id="D76",
         group_by=[],
@@ -76,9 +78,9 @@ def test_build_xml_filter_list():
     )
     xml_str = build_xml(params)
     root = ET.fromstring(xml_str)
-    # Count V_8 occurrences
+    # Filter param name should be "V_D76.V8" (full variable code, not stripped)
     v8_params = [
-        p for p in root.findall("parameter") if p.find("name").text == "V_8"
+        p for p in root.findall("parameter") if p.find("name").text == "V_D76.V8"
     ]
     assert len(v8_params) == 2
 
@@ -113,8 +115,8 @@ def test_build_xml_option_override():
     assert values["O_timeout"] == "900"
 
 
-def test_build_xml_finder_stage_per_group_by():
-    """Each group-by variable gets a finder-stage-* boilerplate parameter."""
+def test_build_xml_required_finder_stages_present():
+    """D76 queries always include the required finder-stage boilerplate params."""
     params = QueryParams(
         database_id="D76",
         group_by=["D76.V1-level1", "D76.V7"],
@@ -123,8 +125,10 @@ def test_build_xml_finder_stage_per_group_by():
     xml_str = build_xml(params)
     root = ET.fromstring(xml_str)
     names = {p.find("name").text for p in root.findall("parameter")}
-    assert "finder-stage-D76.V1-level1" in names
-    assert "finder-stage-D76.V7" in names
+    # These are always required for D76 regardless of group_by choice
+    assert "finder-stage-D76.V1" in names
+    assert "finder-stage-D76.V2" in names
+    assert "finder-stage-D76.V9" in names
 
 
 # ---------------------------------------------------------------------------
